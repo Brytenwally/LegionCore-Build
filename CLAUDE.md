@@ -24,7 +24,7 @@ rules and plan). Pattern: `Brytenwally/SkyFire-build` (read-only reference).
   system yet (plan step 1) and the module repo is empty (checkout of an empty repo fails).
   Turn the default on once both exist.
 - Dependencies follow Reforged's own `.github/workflows/build-win-x64.yml`: Boost **1.84**
-  (the core needs >= 1.78; newer Boost removed APIs this old code may use), built here from
+  (the core needs >= 1.78; see the runner note for why not newer), built here from
   source with the runner's MSVC (static, shared CRT, only the components
   `dep/boost/CMakeLists.txt` asks for), cached; `Boost_DIR` is passed explicitly because the
   core only hints `lib64-msvc-*/cmake` layouts. OpenSSL: newest **3.x** full installer listed
@@ -33,6 +33,11 @@ rules and plan). Pattern: `Brytenwally/SkyFire-build` (read-only reference).
   `.dll`, **`mysql.exe`** and its OpenSSL 3 DLLs are cached. The core's SQL updater
   (TrinityCore `DBUpdater`) shells out to `mysql` (`MySQLExecutable`), so it ships. MySQL
   paths are passed with forward slashes and checked in `CMakeCache.txt`.
+- Runner: **`windows-2022`** (VS 2022, toolset v143), not `windows-latest`: that has VS 2026
+  (VS 18), whose toolset Boost 1.84's bootstrap rejects ("Unknown toolset: vcunk"), and
+  Reforged was only ever built with VS 2022. Boost cannot simply be raised: the core still uses
+  `io_service` and `io_context::strand`, removed in Boost 1.87. Moving to a newer runner means
+  porting those first.
 - No `-G`: Visual Studio generator, `-A x64`, `SCRIPTS=static`; outputs land in
   `build/bin/Release` (the core's POST_BUILD copies use `$(ConfigurationName)`).
 - Package = `cmake --install` output + exe/dll/conf.dist/pem from `build/bin/Release` + MySQL

@@ -57,8 +57,8 @@ env:
   MYSQL_VERSION: ${{ inputs.mysql_version || '8.0.44' }}
 
   BUILD_TYPE: Release
-  # Reforged's own Windows CI uses Boost 1.84 (the core needs >= 1.78 and
-  # predates Boost's later API removals). Built here from source with the
+  # Reforged's own Windows CI uses Boost 1.84 (the core needs >= 1.78 and still
+  # uses io_service / io_context::strand, which Boost 1.87 removed). Built here from source with the
   # runner's MSVC, so the toolset always matches.
   BOOST_VERSION: 1.84.0
   BOOST_ROOT: C:\local\boost_1_84_0
@@ -72,7 +72,9 @@ env:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # windows-latest has Visual Studio 2026, which Boost 1.84's build does not know
+    # (and Reforged's code was never built with). VS 2022 is what its own CI used.
+    runs-on: windows-2022
 
     steps:
     - name: Check out core
@@ -141,7 +143,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ${{ env.BOOST_ROOT }}
-        key: boost-${{ env.BOOST_VERSION }}-msvc-x64-static
+        key: boost-${{ env.BOOST_VERSION }}-msvc143-x64-static
 
     - name: Build Boost
       if: steps.boost-cache.outputs.cache-hit != 'true'
@@ -158,7 +160,7 @@ jobs:
           # The components dep/boost/CMakeLists.txt asks for; static libs,
           # shared CRT (Boost_USE_STATIC_LIBS ON, Boost_USE_STATIC_RUNTIME OFF).
           .\b2.exe install --prefix="$env:BOOST_ROOT" -j4 `
-            toolset=msvc address-model=64 architecture=x86 `
+            toolset=msvc-14.3 address-model=64 architecture=x86 `
             link=static runtime-link=shared threading=multi variant=release `
             --with-system --with-filesystem --with-thread --with-program_options `
             --with-iostreams --with-regex --with-locale
