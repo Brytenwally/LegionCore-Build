@@ -35,7 +35,10 @@ Needs the [Visual C++ 2015-2022 x64 redistributable](https://aka.ms/vs/17/releas
    `bnetserver.conf`.
 2. In both: `SourceDirectory = "."` (the folder holding `sql\`), `MySQLExecutable = "mysql.exe"`,
    and the `*DatabaseInfo` lines set to your MySQL login (defaults `root;admin`).
-3. Create the databases (`auth`, `characters`, `world`, `hotfixes`); with
+3. Create the databases `auth`, `characters`, **`world_legion`** and **`hotfixes_legion`**, and
+   use those names in `WorldDatabaseInfo` / `HotfixDatabaseInfo`: Reforged's SQL updates
+   refer to `world_legion` and `hotfixes_legion` by name, so `world` / `hotfixes` fail with
+   "Unknown database 'hotfixes_legion'"; with
    `Updates.AutoSetup = 1` the servers fill empty ones from `sql\base` and apply `sql\updates`.
 4. Extract the client data with the tools (see the core's README) into `ClientData`
    (`DataDir`).

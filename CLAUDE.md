@@ -51,6 +51,8 @@ rules and plan). Pattern: `Brytenwally/SkyFire-build` (read-only reference).
   runner's source path baked in at build time, so it must be set to `"."` in the package),
   `MySQLExecutable`, `Updates.AutoSetup`/`EnableDatabases`. `Game.Patch.ContentScripts` reads
   `<SourceDirectory>/sql/optional`.
+- Database names: `world_legion` / `hotfixes_legion` (core SQL updates refer to them by name;
+  see the core's `CLAUDE.md`). The README setup steps say so.
 - Changelog step: same as SkyFire-build (`commits.json` in the package, previous successful
   run's artifact `LegionCore-735-*`, GitHub compare API), never fails the build.
 - The cloud container has no Windows and cannot reach mysql.com: verify changes by running
