@@ -1,0 +1,432 @@
+name: Build Windows binaries
+
+# Builds LegionCore-Reforged 7.3.5 (worldserver, bnetserver, extractors) for
+# Windows x64 against the MySQL 8.0.44 client library. Modules (playerbots)
+# are checked out into the core's modules/ folder once they exist.
+#
+# Run it from the Actions tab (Run workflow), or push a tag like v1.0.0 to also
+# publish the zip as a GitHub Release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      core_repo:
+        description: LegionCore core repository (owner/name)
+        default: Brytenwally/LegionCore-Reforged
+      core_ref:
+        description: Core branch, tag or commit
+        default: main
+      with_playerbots:
+        description: Check the playerbots module out into modules/mod-playerbots
+        type: boolean
+        default: false
+      playerbots_repo:
+        description: Playerbots module repository (owner/name)
+        default: Brytenwally/LegionCore-Playerbots
+      playerbots_ref:
+        description: Playerbots branch, tag or commit
+        default: main
+      with_tools:
+        description: Build the map/vmap/mmap extractors
+        type: boolean
+        default: true
+      mysql_version:
+        description: MySQL client version to link against
+        default: '8.0.44'
+  push:
+    tags: [ 'v*' ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # publishing a Release on tag pushes
+  actions: read   # finding the previous build for the changelog
+
+env:
+  # Inputs are empty on tag pushes, so every value falls back to the default.
+  CORE_REPO: ${{ inputs.core_repo || 'Brytenwally/LegionCore-Reforged' }}
+  CORE_REF: ${{ inputs.core_ref || 'main' }}
+  # Off on tag builds until the core has the module system (plan step 1) and
+  # the module has code; then this default becomes true.
+  WITH_PLAYERBOTS: ${{ github.event_name == 'workflow_dispatch' && inputs.with_playerbots }}
+  PLAYERBOTS_REPO: ${{ inputs.playerbots_repo || 'Brytenwally/LegionCore-Playerbots' }}
+  PLAYERBOTS_REF: ${{ inputs.playerbots_ref || 'main' }}
+  WITH_TOOLS: ${{ github.event_name != 'workflow_dispatch' || inputs.with_tools }}
+  MYSQL_VERSION: ${{ inputs.mysql_version || '8.0.44' }}
+
+  BUILD_TYPE: Release
+  # Reforged's own Windows CI uses Boost 1.84 (the core needs >= 1.78 and
+  # predates Boost's later API removals). Built here from source with the
+  # runner's MSVC, so the toolset always matches.
+  BOOST_VERSION: 1.84.0
+  BOOST_ROOT: C:\local\boost_1_84_0
+  # OpenSSL 3.x (slproweb full installer), as in Reforged's own CI.
+  OPENSSL_MAJOR: '3'
+  OPENSSL_ROOT_DIR: C:\local\openssl
+  MYSQL_DIR: C:\local\mysql
+  CORE_DIR: ${{ github.workspace }}\core
+  BUILD_DIR: ${{ github.workspace }}\build
+  PACKAGE_DIR: ${{ github.workspace }}\package
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Check out core
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ env.CORE_REPO }}
+        ref: ${{ env.CORE_REF }}
+        path: core
+
+    - name: Check out playerbots module
+      if: env.WITH_PLAYERBOTS == 'true'
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ env.PLAYERBOTS_REPO }}
+        ref: ${{ env.PLAYERBOTS_REF }}
+        path: core/modules/mod-playerbots
+
+    - name: Install CMake
+      shell: pwsh
+      run: |
+        for ($attempt = 1; $attempt -le 3; ++$attempt) {
+          choco install -y cmake --no-progress
+          if ($LASTEXITCODE -eq 0) { break }
+          if ($attempt -eq 3) { exit $LASTEXITCODE }
+          Start-Sleep -Seconds (30 * $attempt)
+        }
+
+    - name: Find OpenSSL ${{ env.OPENSSL_MAJOR }}.x
+      id: openssl-info
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        $headers = @{ Accept = 'application/vnd.github.raw+json'; Authorization = "Bearer $env:GH_TOKEN" }
+        $url = 'https://api.github.com/repos/slproweb/opensslhashes/contents/win32_openssl_hashes.json'
+        $openssl = (Invoke-RestMethod $url -Headers $headers).files.PSObject.Properties |
+          Select-Object -ExpandProperty Value |
+          Where-Object { $_.arch -eq 'INTEL' -and $_.bits -eq '64' -and $_.light -eq $false -and $_.installer -eq 'exe' } |
+          Where-Object { $_.basever -like "$env:OPENSSL_MAJOR.*" } |
+          Sort-Object -Descending @{ Expression = { [version]$_.basever } } |
+          Select-Object -First 1
+        if (-not $openssl) { throw "No OpenSSL $env:OPENSSL_MAJOR.x installer listed" }
+        Write-Host "OpenSSL $($openssl.basever): $($openssl.url)"
+        "version=$($openssl.basever)" >> $env:GITHUB_OUTPUT
+        "url=$($openssl.url)" >> $env:GITHUB_OUTPUT
+
+    - name: Cache OpenSSL
+      id: openssl-cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.OPENSSL_ROOT_DIR }}
+        key: openssl-${{ steps.openssl-info.outputs.version }}-win64
+
+    - name: Install OpenSSL
+      if: steps.openssl-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $installer = Join-Path $env:RUNNER_TEMP 'openssl.exe'
+        Invoke-WebRequest -Uri '${{ steps.openssl-info.outputs.url }}' -OutFile $installer
+        Start-Process -Wait -FilePath $installer -ArgumentList '/VERYSILENT', '/SP-', '/SUPPRESSMSGBOXES', "/DIR=$env:OPENSSL_ROOT_DIR"
+        & "$env:OPENSSL_ROOT_DIR\bin\openssl.exe" version
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Cache Boost
+      id: boost-cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.BOOST_ROOT }}
+        key: boost-${{ env.BOOST_VERSION }}-msvc-x64-static
+
+    - name: Build Boost
+      if: steps.boost-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $name = "boost_" + $env:BOOST_VERSION.Replace('.', '_')
+        $archive = Join-Path $env:RUNNER_TEMP "$name.7z"
+        Invoke-WebRequest -Uri "https://archives.boost.io/release/$env:BOOST_VERSION/source/$name.7z" -OutFile $archive
+        7z x $archive "-o$env:RUNNER_TEMP" -y | Out-Null
+        Push-Location (Join-Path $env:RUNNER_TEMP $name)
+        try {
+          .\bootstrap.bat
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The components dep/boost/CMakeLists.txt asks for; static libs,
+          # shared CRT (Boost_USE_STATIC_LIBS ON, Boost_USE_STATIC_RUNTIME OFF).
+          .\b2.exe install --prefix="$env:BOOST_ROOT" -j4 `
+            toolset=msvc address-model=64 architecture=x86 `
+            link=static runtime-link=shared threading=multi variant=release `
+            --with-system --with-filesystem --with-thread --with-program_options `
+            --with-iostreams --with-regex --with-locale
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        } finally {
+          Pop-Location
+        }
+
+    # Only the client headers, import library, DLLs and the mysql.exe command
+    # line client (the core's SQL updater runs it) are kept.
+    - name: Cache MySQL ${{ env.MYSQL_VERSION }} client
+      id: mysql-cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.MYSQL_DIR }}
+        key: mysql-${{ env.MYSQL_VERSION }}-winx64-client-cli
+
+    - name: Download MySQL ${{ env.MYSQL_VERSION }}
+      if: steps.mysql-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $series = ($env:MYSQL_VERSION -split '\.')[0..1] -join '.'
+        $zip = "mysql-$env:MYSQL_VERSION-winx64.zip"
+        # Current releases live under Downloads, older ones move to archives.
+        $urls = @(
+          "https://cdn.mysql.com/Downloads/MySQL-$series/$zip",
+          "https://cdn.mysql.com/archives/mysql-$series/$zip",
+          "https://downloads.mysql.com/archives/get/p/23/file/$zip"
+        )
+        $archive = Join-Path $env:RUNNER_TEMP $zip
+        $ok = $false
+        foreach ($url in $urls) {
+          try {
+            Write-Host "Trying $url"
+            Invoke-WebRequest -Uri $url -OutFile $archive -UserAgent 'Mozilla/5.0'
+            $ok = $true
+            break
+          } catch {
+            Write-Host "  failed: $($_.Exception.Message)"
+          }
+        }
+        if (-not $ok) { throw "Could not download $zip" }
+
+        7z x $archive "-o$env:RUNNER_TEMP" -y | Out-Null
+        $src = Join-Path $env:RUNNER_TEMP "mysql-$env:MYSQL_VERSION-winx64"
+        New-Item -ItemType Directory -Force -Path "$env:MYSQL_DIR\lib", "$env:MYSQL_DIR\bin" | Out-Null
+        Copy-Item -Recurse "$src\include" "$env:MYSQL_DIR\include"
+        Copy-Item "$src\lib\libmysql.lib", "$src\lib\libmysql.dll" "$env:MYSQL_DIR\lib"
+        Copy-Item "$src\bin\mysql.exe" "$env:MYSQL_DIR\bin"
+        # The OpenSSL 3 runtime libmysql.dll and mysql.exe were built with.
+        Get-ChildItem "$src\bin", "$src\lib" -Filter 'lib*-3-x64.dll' -ErrorAction SilentlyContinue |
+          Copy-Item -Destination "$env:MYSQL_DIR\bin" -Force
+
+    - name: Verify MySQL client version
+      shell: pwsh
+      run: |
+        $header = Get-Content "$env:MYSQL_DIR\include\mysql_version.h" -Raw
+        if ($header -notmatch '#define\s+MYSQL_SERVER_VERSION\s+"([^"]+)"') { throw 'mysql_version.h has no MYSQL_SERVER_VERSION' }
+        $found = $Matches[1]
+        if (-not $found.StartsWith($env:MYSQL_VERSION)) { throw "Expected MySQL $env:MYSQL_VERSION headers, found $found" }
+        Write-Host "MySQL client headers: $found"
+
+    - name: Configure
+      shell: pwsh
+      run: |
+        $tools = if ($env:WITH_TOOLS -eq 'true') { 'ON' } else { 'OFF' }
+        $mysql = $env:MYSQL_DIR.Replace('\', '/')
+        $boost = $env:BOOST_ROOT.Replace('\', '/')
+        $boostDir = (Get-ChildItem "$env:BOOST_ROOT\lib\cmake" -Directory -Filter "Boost-$env:BOOST_VERSION").FullName.Replace('\', '/')
+        # MySQL paths are passed explicitly so the runner's preinstalled MySQL
+        # server is never picked up instead of the requested client version.
+        cmake -S "$env:CORE_DIR" -B "$env:BUILD_DIR" -A x64 `
+          -DTOOLS="$tools" `
+          -DSERVERS=ON `
+          -DSCRIPTS=static `
+          -DUSE_COREPCH=ON `
+          -DUSE_SCRIPTPCH=ON `
+          -DBOOST_ROOT="$boost" `
+          -DBoost_DIR="$boostDir" `
+          -DOPENSSL_ROOT_DIR="$($env:OPENSSL_ROOT_DIR.Replace('\', '/'))" `
+          -DMYSQL_INCLUDE_DIR="$mysql/include" `
+          -DMYSQL_LIBRARY="$mysql/lib/libmysql.lib" `
+          -DMYSQL_EXECUTABLE="$mysql/bin/mysql.exe" `
+          -DCMAKE_INSTALL_PREFIX="$env:PACKAGE_DIR"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        $cache = Get-Content "$env:BUILD_DIR\CMakeCache.txt"
+        $cache | Select-String '^(MYSQL_(INCLUDE_DIR|LIBRARY|EXECUTABLE)|Boost_DIR|OPENSSL_(INCLUDE_DIR|CRYPTO_LIBRARY))[:=]'
+        if (-not ($cache | Select-String -Pattern ('^MYSQL_LIBRARY:[A-Z]+=' + [regex]::Escape("$mysql/lib/libmysql.lib") + '$'))) {
+          throw 'CMake did not pick the MySQL client from MYSQL_DIR'
+        }
+
+    - name: Build
+      shell: pwsh
+      run: |
+        cmake --build "$env:BUILD_DIR" --config "$env:BUILD_TYPE" --parallel 4
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Package
+      shell: pwsh
+      run: |
+        cmake --install "$env:BUILD_DIR" --config "$env:BUILD_TYPE"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        # Anything the post-build steps staged next to the executables
+        # (runtime DLLs, .conf.dist files, certificates, tools) that install skipped.
+        $out = "$env:BUILD_DIR\bin\$env:BUILD_TYPE"
+        Get-ChildItem -Path "$out\*" -File -Include *.exe, *.dll, *.conf.dist, *.pem |
+          Where-Object { -not (Test-Path (Join-Path $env:PACKAGE_DIR $_.Name)) } |
+          Copy-Item -Destination $env:PACKAGE_DIR
+
+        # MySQL client library, the mysql.exe the SQL updater runs, and the
+        # OpenSSL runtime of both.
+        Copy-Item "$env:MYSQL_DIR\lib\libmysql.dll", "$env:MYSQL_DIR\bin\mysql.exe" $env:PACKAGE_DIR -Force
+        Get-ChildItem "$env:MYSQL_DIR\bin" -Filter *.dll |
+          Where-Object { -not (Test-Path (Join-Path $env:PACKAGE_DIR $_.Name)) } |
+          Copy-Item -Destination $env:PACKAGE_DIR
+        # The core's own OpenSSL 3 runtime (same names; the newest one wins).
+        foreach ($dll in 'libssl-3-x64.dll', 'libcrypto-3-x64.dll', 'legacy.dll') {
+          $path = Get-ChildItem $env:OPENSSL_ROOT_DIR -Recurse -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($path) { Copy-Item $path.FullName $env:PACKAGE_DIR -Force }
+        }
+
+        # The SQL updater reads <SourceDirectory>/sql (base dumps, updates,
+        # archived updates) and Game.Patch reads sql/optional, so the whole
+        # sql folder is shipped; set SourceDirectory = "." in the confs.
+        Copy-Item -Recurse "$env:CORE_DIR\sql" "$env:PACKAGE_DIR\sql"
+
+        $coreSha = git -C "$env:CORE_DIR" rev-parse --short HEAD
+        $botsSha = if ($env:WITH_PLAYERBOTS -eq 'true') { git -C "$env:CORE_DIR\modules\mod-playerbots" rev-parse --short HEAD } else { 'not included' }
+        $opensslVersion = (& "$env:OPENSSL_ROOT_DIR\bin\openssl.exe" version)
+        @(
+          "LegionCore-Reforged 7.3.5 (26972) Windows x64 $env:BUILD_TYPE build"
+          "Built:      $(Get-Date -Format 'yyyy-MM-dd HH:mm') UTC by $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          "Core:       $env:CORE_REPO@$env:CORE_REF ($coreSha)"
+          "Playerbots: $env:PLAYERBOTS_REPO@$env:PLAYERBOTS_REF ($botsSha)"
+          "MySQL:      $env:MYSQL_VERSION client (libmysql.dll, mysql.exe)"
+          "Boost:      $env:BOOST_VERSION"
+          "OpenSSL:    $opensslVersion"
+          ""
+          "Setup: copy worldserver.conf.dist / bnetserver.conf.dist to .conf, set"
+          "SourceDirectory = `".`" and MySQLExecutable = `"mysql.exe`" in both, and the"
+          "*DatabaseInfo lines to your MySQL login. Updates.AutoSetup = 1 fills empty"
+          "databases from sql\base and applies sql\updates."
+          ""
+          "Needs the Microsoft Visual C++ 2015-2022 x64 redistributable:"
+          "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+        ) | Set-Content "$env:PACKAGE_DIR\BUILD-INFO.txt"
+
+        $name = "LegionCore-735-win64-mysql$env:MYSQL_VERSION-$coreSha"
+        if ($env:WITH_PLAYERBOTS -eq 'true') { $name += "-playerbots-$botsSha" }
+        "PACKAGE_NAME=$name" >> $env:GITHUB_ENV
+        Get-ChildItem $env:PACKAGE_DIR -File | Select-Object -ExpandProperty Name
+
+    - name: Check binaries
+      shell: pwsh
+      run: |
+        foreach ($exe in 'worldserver.exe', 'bnetserver.exe') {
+          if (-not (Test-Path "$env:PACKAGE_DIR\$exe")) { throw "$exe missing from the package" }
+        }
+        & "$env:PACKAGE_DIR\mysql.exe" --version
+        if ($LASTEXITCODE -ne 0) { throw 'mysql.exe does not start (missing DLL?)' }
+
+    - name: Changelog since the previous build
+      # A changelog problem never costs the build itself.
+      continue-on-error: true
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        # The commits this build is made of, kept in the package so the next
+        # build can compare against them.
+        $components = @(
+          @{ Name = 'Core';       Repo = $env:CORE_REPO;       Dir = $env:CORE_DIR;                           On = $true }
+          @{ Name = 'Playerbots'; Repo = $env:PLAYERBOTS_REPO; Dir = "$env:CORE_DIR\modules\mod-playerbots"; On = $env:WITH_PLAYERBOTS -eq 'true' }
+        )
+        $current = [ordered]@{}
+        foreach ($c in $components) {
+          if ($c.On) { $current[$c.Name] = [ordered]@{ repo = $c.Repo; sha = (git -C $c.Dir rev-parse HEAD).Trim() } }
+        }
+        $current | ConvertTo-Json | Set-Content "$env:PACKAGE_DIR\commits.json"
+
+        # The last successful build of this workflow (same branch or tag
+        # first, then any) whose package can still be downloaded.
+        function Find-PreviousBuild {
+          foreach ($filter in @(, @('--branch', $env:GITHUB_REF_NAME)) + @(, @())) {
+            $json = gh run list -R $env:GITHUB_REPOSITORY --workflow build-windows.yml --status success --limit 10 --json databaseId,number @filter
+            if ($LASTEXITCODE -ne 0 -or -not $json) { continue }
+            foreach ($run in (($json -join "`n") | ConvertFrom-Json)) {
+              if ("$($run.databaseId)" -eq $env:GITHUB_RUN_ID) { continue }
+              $dir = Join-Path $env:RUNNER_TEMP "previous-$($run.databaseId)"
+              gh run download $run.databaseId -R $env:GITHUB_REPOSITORY -p 'LegionCore-735-*' -D $dir 2>&1 | Out-Null
+              if ($LASTEXITCODE -ne 0) { continue }   # artifact expired or deleted
+              $file = Get-ChildItem $dir -Recurse -Filter commits.json | Select-Object -First 1
+              if (-not $file) { continue }
+              $commits = @{}
+              (Get-Content $file.FullName -Raw | ConvertFrom-Json).PSObject.Properties |
+                ForEach-Object { $commits[$_.Name] = @{ repo = $_.Value.repo; sha = $_.Value.sha } }
+              if ($commits.Count) { return @{ Run = $run; Commits = $commits } }
+            }
+          }
+          return $null
+        }
+
+        $runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs"
+        $previous = Find-PreviousBuild
+        $lines = @()
+        if (-not $previous) {
+          $lines += '# Changes since the previous build', '', 'No previous build to compare with.'
+        } else {
+          $lines += "# Changes since build #$($previous.Run.number)", ''
+          $lines += "Previous build: $runUrl/$($previous.Run.databaseId)", ''
+          foreach ($name in $current.Keys) {
+            $cur = $current[$name]
+            $old = $previous.Commits[$name]
+            $lines += "## $name ($($cur.repo))", ''
+            if (-not $old) { $lines += 'Not in the previous build.', ''; continue }
+            if ($old.repo -ne $cur.repo) { $lines += "The previous build used $($old.repo) ($($old.sha.Substring(0, 7))).", ''; continue }
+            $json = gh api "repos/$($cur.repo)/compare/$($old.sha)...$($cur.sha)"
+            if ($LASTEXITCODE -ne 0 -or -not $json) {
+              $lines += "Could not compare $($old.sha.Substring(0, 7)) with $($cur.sha.Substring(0, 7)).", ''
+              continue
+            }
+            $cmp = ($json -join "`n") | ConvertFrom-Json
+            if ($cmp.total_commits -eq 0 -and $cmp.behind_by -eq 0) { $lines += 'No changes.', ''; continue }
+            # Newest first; the compare API lists at most 250 commits.
+            $list = @($cmp.commits)
+            [array]::Reverse($list)
+            foreach ($commit in $list) {
+              $subject = ($commit.commit.message -split "`n")[0].Trim()
+              $lines += "- [``$($commit.sha.Substring(0, 7))``]($($commit.html_url)) $subject ($($commit.commit.author.name))"
+            }
+            if ($cmp.total_commits -gt $list.Count) { $lines += "- ... $($cmp.total_commits - $list.Count) more: $($cmp.html_url)" }
+            if ($cmp.behind_by -gt 0) {
+              $lines += '', "$($cmp.behind_by) commit(s) of the previous build are not in this one (an older or different branch was built)."
+            }
+            $lines += ''
+          }
+          foreach ($name in $previous.Commits.Keys) {
+            if (-not $current.Contains($name)) { $lines += "## $name", '', 'In the previous build, left out of this one.', '' }
+          }
+        }
+
+        $lines | Set-Content "$env:PACKAGE_DIR\CHANGELOG.md"
+        $lines | Add-Content $env:GITHUB_STEP_SUMMARY
+        @('```') + (Get-Content "$env:PACKAGE_DIR\BUILD-INFO.txt") + @('```', '') + $lines |
+          Set-Content "$env:GITHUB_WORKSPACE\RELEASE-NOTES.md"
+        $lines | Write-Host
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.PACKAGE_NAME }}
+        path: ${{ env.PACKAGE_DIR }}
+        if-no-files-found: error
+
+    - name: Zip for release
+      if: startsWith(github.ref, 'refs/tags/')
+      shell: pwsh
+      run: |
+        Compress-Archive -Path "$env:PACKAGE_DIR\*" -DestinationPath "$env:GITHUB_WORKSPACE\$env:PACKAGE_NAME.zip"
+        if (-not (Test-Path "$env:GITHUB_WORKSPACE\RELEASE-NOTES.md")) {
+          Copy-Item "$env:PACKAGE_DIR\BUILD-INFO.txt" "$env:GITHUB_WORKSPACE\RELEASE-NOTES.md"
+        }
+
+    - name: Publish release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v2
+      with:
+        files: ${{ env.PACKAGE_NAME }}.zip
+        body_path: RELEASE-NOTES.md
