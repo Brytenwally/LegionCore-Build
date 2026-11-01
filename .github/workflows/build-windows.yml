@@ -1,8 +1,8 @@
 name: Build Windows binaries
 
 # Builds LegionCore-Reforged 7.3.5 (worldserver, bnetserver, extractors) for
-# Windows x64 against the MySQL 8.0.44 client library. Modules (playerbots)
-# are checked out into the core's modules/ folder once they exist.
+# Windows x64 against the MySQL 8.0.44 client library, with the playerbots
+# module checked out into the core's modules/ folder and compiled in.
 #
 # Run it from the Actions tab (Run workflow), or push a tag like v1.0.0 to also
 # publish the zip as a GitHub Release.
@@ -17,9 +17,9 @@ on:
         description: Core branch, tag or commit
         default: main
       with_playerbots:
-        description: Check the playerbots module out into modules/mod-playerbots
+        description: Compile the playerbots module in (modules/mod-playerbots)
         type: boolean
-        default: false
+        default: true
       playerbots_repo:
         description: Playerbots module repository (owner/name)
         default: Brytenwally/LegionCore-Playerbots
@@ -48,9 +48,7 @@ env:
   # Inputs are empty on tag pushes, so every value falls back to the default.
   CORE_REPO: ${{ inputs.core_repo || 'Brytenwally/LegionCore-Reforged' }}
   CORE_REF: ${{ inputs.core_ref || 'main' }}
-  # Off on tag builds until the core has the module system (plan step 1) and
-  # the module has code; then this default becomes true.
-  WITH_PLAYERBOTS: ${{ github.event_name == 'workflow_dispatch' && inputs.with_playerbots }}
+  WITH_PLAYERBOTS: ${{ github.event_name != 'workflow_dispatch' || inputs.with_playerbots }}
   PLAYERBOTS_REPO: ${{ inputs.playerbots_repo || 'Brytenwally/LegionCore-Playerbots' }}
   PLAYERBOTS_REF: ${{ inputs.playerbots_ref || 'main' }}
   WITH_TOOLS: ${{ github.event_name != 'workflow_dispatch' || inputs.with_tools }}

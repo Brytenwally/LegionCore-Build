@@ -2,8 +2,8 @@
 
 GitHub Actions workflow that builds **LegionCore-Reforged 7.3.5 (build 26972)** Windows x64
 binaries from `Brytenwally/LegionCore-Reforged`, linked against the **MySQL 8.0.44** client.
-Modules (the playerbots port, `Brytenwally/LegionCore-Playerbots`) can be checked out into the
-core's `modules/` folder; that is off until the core has a module system.
+The playerbots module (`Brytenwally/LegionCore-Playerbots`) is checked out into the core's
+`modules/mod-playerbots` and compiled in (input `with_playerbots`, on by default).
 
 ## Running a build
 
@@ -17,8 +17,9 @@ The result is a workflow artifact named
 
 ## What is in the package
 
-- `worldserver.exe`, `bnetserver.exe` (+ `bnetserver.cert.pem` / `.key.pem`), the
-  `.conf.dist` files, and with tools on: `mapextractor`, `vmap4extractor`, `vmap4assembler`,
+- `worldserver.exe`, `bnetserver.exe` (+ `bnetserver.cert.pem` / `.key.pem`),
+  `connection_patcher.exe`, the `.conf.dist` files (incl. `playerbots.conf.dist` and
+  `example.conf.dist`; copy to `.conf` to change a module setting), and with tools on: `mapextractor`, `vmap4extractor`, `vmap4assembler`,
   `mmaps_generator`.
 - `libmysql.dll`, `mysql.exe` (the SQL updater runs it) and the OpenSSL 3 DLLs.
 - `sql\`: the core's whole `sql` folder (base dumps, updates, archived updates, the
