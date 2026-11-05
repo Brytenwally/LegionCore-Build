@@ -5,6 +5,21 @@ binaries from `Brytenwally/LegionCore-Reforged`, linked against the **MySQL 8.0.
 The playerbots module (`Brytenwally/LegionCore-Playerbots`) is checked out into the core's
 `modules/mod-playerbots` and compiled in (input `with_playerbots`, on by default).
 
+## What the build uses
+
+| Part | Repository | Branch / version | Where it goes |
+| --- | --- | --- | --- |
+| Core | [Brytenwally/LegionCore-Reforged](https://github.com/Brytenwally/LegionCore-Reforged) | `main` (input `core_ref`) | the source tree |
+| Playerbots module | [Brytenwally/LegionCore-Playerbots](https://github.com/Brytenwally/LegionCore-Playerbots) | `main` (input `playerbots_ref`) | `modules/mod-playerbots` |
+| Example module | in the core (`modules/mod-example`) | the core's branch | built always |
+| Build workflow | [Brytenwally/LegionCore-Build](https://github.com/Brytenwally/LegionCore-Build) (this repo) | `main` | `.github/workflows/build-windows.yml` |
+| Boost | [boost.org](https://www.boost.org/) source, [archives.boost.io](https://archives.boost.io/release/1.84.0/source/) | 1.84.0 (built here with MSVC, cached) | linked in |
+| OpenSSL | [slproweb Win64 OpenSSL](https://slproweb.com/products/Win32OpenSSL.html) ([hashes](https://github.com/slproweb/opensslhashes)) | newest 3.x | linked in, DLLs packaged |
+| MySQL client | [MySQL Community Server zip](https://dev.mysql.com/downloads/mysql/) ([cdn.mysql.com](https://cdn.mysql.com/)) | 8.0.44 (input `mysql_version`) | `libmysql`, `mysql.exe` packaged |
+| Compiler | GitHub's [`windows-2022`](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md) runner | Visual Studio 2022 (v143), CMake | |
+
+Each package's `BUILD-INFO.txt` records the exact commits and versions used.
+
 ## Running a build
 
 - **Actions tab → Build Windows binaries → Run workflow.** Inputs: core repo/ref, playerbots
