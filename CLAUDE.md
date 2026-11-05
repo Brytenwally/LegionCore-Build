@@ -14,6 +14,8 @@ rules and plan). Pattern: `Brytenwally/SkyFire-build` (read-only reference).
 ## Git rules
 
 - Commit and push straight to **`main`**. No feature branches or PRs unless the owner asks.
+- **Run the workflow only when the owner asks for a build** (owner, 2026-11-05), not after every
+  pushed step.
 
 ## Workflow facts
 
